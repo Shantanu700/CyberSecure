@@ -11,6 +11,8 @@ urlpatterns = [
     path('list_cat_data/',views.list_cat_data),
     path('data_status/',views.like_dislike),
     path('list_top/',views.top_categories),
+    path('book_pkg/',views.book_pkg),
+    path('test/',views.test2),
     path('chatbot/',views.chatbot)
 
 ]

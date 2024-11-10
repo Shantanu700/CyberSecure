@@ -1,14 +1,18 @@
 from django.shortcuts import render
 from django.http import JsonResponse
 import re
+from django.utils.html import strip_tags
+from django.template.loader import render_to_string,get_template,select_template
+from django.core.mail import EmailMultiAlternatives
+from django.db.models import F
 from django.utils import timezone
 from datetime import datetime
 from django.db.models import Count
 from django.contrib.auth import authenticate, login, logout
-from .models import Data
-from .models import Category
-from .models import UserLike
-from .models import Comment
+from .models import *
+# from .models import Comment
+# from .models import Category
+# from .models import UserLike
 from django.contrib.auth.models import User
 import json
 import google.generativeai as genai
@@ -91,6 +95,10 @@ def login_user(request):
             
             return JsonResponse({'message':'User successfully logged in!'}, status=200)
         return JsonResponse({'error': 'Invalid credentials'}, status=401)
+
+
+
+
 def login_det(request):
     if request.method =="GET":
         if not request.user.is_authenticated:
@@ -116,158 +124,45 @@ def data_insert(request):
     if request.method=="POST":
         data = json.loads(request.body)
         title = data.get('title')
-        if title is None:
-            return JsonResponse({'error':'Please enter valid title'},status=400)
-        info = data.get('content')
-        if info is None:
-            return JsonResponse({'error':'Please enter valid information'},status =400)
-        if len(info)>6000:
-            return JsonResponse({"error":"Data too large to save"},status =400)
-        date = timezone.now().strftime("%Y-%m-%d")
-        category_list = data.get('category')
-        category_ind = category_list[0]
-        link = data.get('link')
-        if link is None:
-            return JsonResponse({'error':'Please provide link also'},status =400)
-        if Data.objects.filter(title =title).filter(info =info).exists():
-            return JsonResponse({'error':'Data already exists!'},status =400)
-        if not Category.objects.filter(name =category_ind).exists():
-            category =Category.objects.create(name = category_ind)
-            category_details = Category.objects.filter(name = category_ind).values()
-            id = category_details[0]['id']
-            Data.objects.create(title = title,info =info,category_id = id,link=link,date =date)
-        else:
-            category_details = Category.objects.filter(name = category_list).values()
-            id = category_details[0]['id']
-            Data.objects.create(title = title,info =info,category_id = id,link=link,date =date)
+        print(data)
         return JsonResponse({'message':'Data inserted successfully'},status=201)
-    else:
-        return JsonResponse({'error':'Invalid Method'},status =405)
+    return JsonResponse({'error':'Invalid Method'},status =405)
     
     
 def list_data(request):
     if request.method == "GET":
-        details = Data.objects.all().values()
-        id_list=[]
-        det=[]
-        for item in details:
-            val={
-                'id':item['id']
-            }
-            id_list.append(val)
-        for item in id_list:
-            id = item['id']
-            info = Data.objects.filter(id =id).values()
-            info_cat_id = info[0]['category_id']
-            category_data = Category.objects.filter(id = info_cat_id).values()
-            cat_name  = category_data[0]['name']
-            val ={
-                'id':info[0]['id'],
-                'title':info[0]['title'],
-                'info':info[0]['info'],
-                'category':cat_name,
-                'link':info[0]['link'],
-                'date':info[0]['date'],
-                'likes':info[0]['num_likes']
-                }
-            det.append(val)
-        return JsonResponse({'list':det},status =200)
+        det = Data.objects.all().values('id','title','info','category__name','link','date','content',likes=F('num_likes'))
+        return JsonResponse({'list':list(det)},status =200)
+    
     else:
         return JsonResponse({'error':'Invalid method'},status =405)
                     
     
 def list_cat_data(request):
     if request.method=="GET":
-        name = request.GET.get('category')
-        print(name)
-        category_details = Category.objects.filter(name = name).values()
-        id = category_details[0]['id']
-        details =[]
-        data = Data.objects.filter(category_id = id).values()
-        print(data)
-        id_list =[]
-        for item in data:
-            values={
-                'id':item['id']
-            }
-            id_list.append(values)
-        print(id_list)
-        for i in id_list:
-            det= Data.objects.filter(id =i['id']).values()
-            print(det)
-            for into in det:
-                print(into)
-                val={
-                'title':into['title'],
-                'info':into['info'],
-                'link':into['link'],
-                'date':into['date']
-                }
-                details.append(val)
-        return JsonResponse({'list':details},status =200)
+        cat_id = request.GET.get('category_id')
+        data = Data.objects.filter(category_id=cat_id).values('title','info','category__name','link','date')
+        return JsonResponse(list(data),safe=False)
     else:
         return JsonResponse({"error":"Invalid method"},status =405)
 
 
 def like_dislike(request):
-    if request.method == "PATCH":
-        user = request.user        
-        if not user.is_authenticated:
-            return JsonResponse({'error': 'User not authenticated','route':'/login'}, status=401)
-
-        data = json.loads(request.body)
-        post_id = data.get('id')
-        comment_content = data.get('comment', None)
-
-        det = Data.objects.filter(id=post_id).first()
-
-        if not det:
-            return JsonResponse({'error': 'Post not found'}, status=404)
-
-        user_like = UserLike.objects.filter(user=user, post=det).first()
-        message = ''
-
-        if user_like:
-            if user_like.is_like:
-                user_like.is_like = False
-                det.num_likes = max(0, det.num_likes - 1)
-                det.num_dislikes += 1
-                message  = 'Post unliked'
-            else:
-                user_like.is_like = True
-                det.num_dislikes = max(0, det.num_dislikes - 1)
-                det.num_likes += 1
-                message = 'Post liked'
-            user_like.save()
-        else:
-            UserLike.objects.create(user=user, post=det, is_like=True)
-            det.num_likes += 1
-            message = 'Post liked'
-
-        if comment_content:
-            Comment.objects.create(post=det, user=user, content=comment_content)
-            comment_entry = {
-                'user': user.username,
-                'content': comment_content,
-                'created_at': str(datetime.now())
-            }
-            det.content.append(comment_entry)
-            message += f" and comment added: {comment_content}"
-
-        det.save()
-
-        total_likes = det.num_likes - det.num_dislikes
-
-        return JsonResponse({
-            'message': message,
-            'is_like': user_like.is_like,
-            'total_likes': total_likes,
-            'comments': det.content
-        }, status=200)
-
-    return JsonResponse({'error': 'Invalid method'}, status=405)
-
-
+    if request.method == "PUT":
+        if request.user.is_authenticated:
+            data = json.loads(request.body)
+            post_id = data.get('id')
+            # comment_content = data.get('comment')
+            if not Data.objects.filter(id=post_id).exists():
+                return JsonResponse({'error':'post doesn\'t exists'},status=404)
+            like_post, created = UserLike.objects.get_or_create(user=request.user, post_id=post_id, defaults={'is_like':1})
+            if not created:
+                like_post.is_like = F('is_like')*-1
+                like_post.save()
+                return JsonResponse({'status':'updated post'})
+            return JsonResponse({'status':'like status saved succesfully'})
+        return JsonResponse({'error': 'User not authenticated','route':'/login'}, status=401)
+    return JsonResponse({'error': 'Invalid request method'}, status=405)
 def top_categories(request):
     if request.method == "GET":
         categories = Category.objects.annotate(post_count=Count('data')).order_by('-post_count')[:5]
@@ -285,6 +180,75 @@ def top_categories(request):
 
     return JsonResponse({'error': 'Invalid method'}, status=405)
 
+def book_pkg(request):
+    if request.method == 'GET':
+        data = packages.objects.all().values()
+        return JsonResponse({'packages':list(data)})
+    if request.method == 'POST':
+        if request.user.is_authenticated:
+            data = json.loads(request.body)
+            pkg_id = data.get('pkg_id')
+            if pkg_id is None or not pkg_id:
+                return JsonResponse({'status':'package ID is required'},status=422)
+            cat_ids = data.get('cat_id')
+            if pkg_id==1 and len(cat_ids)!=1:
+                return JsonResponse({'status':'Invalid category ID'},status=422)
+            scrp = subscriptions.objects.create(scr_user=request.user, scr_pkg_id=pkg_id)
+            for category in cat_ids:
+                subscribed_category = subscribed_cat.objects.create(subscription_id=scrp,subscribed_category_id=category)
+            return JsonResponse({'status':'subscription added successfully'})
+        return JsonResponse({'error': 'User not authenticated','route':'/login'}, status=401)
+    return JsonResponse({'status':'Invalid method'}, status=405)
+         
+def test(request):
+    if request.method == 'GET':
+        subject = 'Weekly Update Regarding Cyber Security'
+        from_email = 'shantanugupta13524@gmail.com'
+        recipient_list_1 = list(subscribed_cat.objects.filter(subscribed_category_id=1).values('subscription_id__scr_user__email'))
+        email_list_1 = [item['subscription_id__scr_user__email'] for item in recipient_list_1]
+        unique_email_list_1 = list(set(email_list_1))
+        
+        recipient_list_2 = list(subscribed_cat.objects.filter(subscribed_category_id=2).values('subscription_id__scr_user__email'))
+        email_list_2 = [item['subscription_id__scr_user__email'] for item in recipient_list_2]
+        unique_email_list_2 = list(set(email_list_2))
+        
+        recipient_list_3 = list(subscribed_cat.objects.filter(subscribed_category_id=3).values('subscription_id__scr_user__email'))
+        email_list_3 = [item['subscription_id__scr_user__email'] for item in recipient_list_3]
+        unique_email_list_3 = list(set(email_list_3))
+        
+        recipient_list_4 = list(subscribed_cat.objects.filter(subscribed_category_id=4).values('subscription_id__scr_user__email'))
+        email_list_4 = [item['subscription_id__scr_user__email'] for item in recipient_list_4]
+        unique_email_list_4 = list(set(email_list_4))
+
+        cat_1_news = Data.objects.filter(category_id=1).order_by('-date').values('title','info')[:5]
+        cat_2_news = Data.objects.filter(category_id=2).order_by('-date').values('title','info')[:5]
+        cat_3_news = Data.objects.filter(category_id=3).order_by('-date').values('title','info')[:5]
+        cat_4_news = Data.objects.filter(category_id=4).order_by('-date').values('title','info')[:5]
+        
+        html_content1 = render_to_string('html_mail.html')
+        
+        
+        
+        # subject, from_email, to = "hello", "shantanugupta13524@gmail.com", "shantanugupta13524@gmail.com"
+        # text_content = strip_tags(html_content)
+        # msg = EmailMultiAlternatives(subject, text_content, from_email, [to])
+        # msg.attach_alternative(html_content, "text/html")
+        # msg.send(fail_silently=True)
+        # context = {'message': 'Hello, welcome to my simple Django page!'}
+        print(unique_email_list)
+        return JsonResponse({'status':'Test'})    
+
+def test2(request):
+        html_content = render_to_string('html_mail.html')
+        subject, from_email, to = "hello", "shantanugupta13524@gmail.com", "dev241736@gmail.com"
+        text_content = strip_tags(html_content)
+        msg = EmailMultiAlternatives(subject, text_content, from_email, [to])
+        msg.attach_alternative(html_content, "text/html")
+        msg.send(fail_silently=True)
+        return JsonResponse({'status':'Test'})    
+
+        # context = {'message': 'Hello, welcome to my simple Django page!'}
+    
 async def chatbot(request):
     if request.method == 'POST':
         print(request.body)
